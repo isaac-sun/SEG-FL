@@ -1,0 +1,7 @@
+# PyTorch / torchvision are intentionally excluded so managed CUDA builds are preserved.
+numpy>=1.26,<3
+pandas>=2.0
+openpyxl>=3.1
+matplotlib>=3.7
+scipy>=1.10
+pillow>=9.0

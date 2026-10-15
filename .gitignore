@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+pip_pkgs/
+tmp/
+results/
+dataset/
+*.part
+.pytest_cache/
+logs/
+reports/
+pretrained/*.pth
