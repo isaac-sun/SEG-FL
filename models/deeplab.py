@@ -68,7 +68,16 @@ def load_backbone(model: SegModel, path: str) -> int:
     return len(loaded)
 
 
-def create_model(config) -> SegModel:
+def init_head_prior(model: SegModel, class_share) -> None:
+    """Set the final classifier bias to log(class share) (floor 1e-4)."""
+    share = torch.as_tensor(class_share, dtype=torch.float32).clamp_min(1e-4)
+    share = share / share.sum()
+    layer = model.net.classifier[-1]
+    with torch.no_grad():
+        layer.bias.copy_(share.log())
+
+
+def create_model(config, class_share=None) -> SegModel:
     model = SegModel(config.num_classes)
     path = config.pretrained_backbone
     if path and os.path.exists(path):
@@ -79,4 +88,6 @@ def create_model(config) -> SegModel:
             f"pretrained backbone not found: {path} (use --no-pretrained only for tests)")
     else:
         logger.warning("no pretrained backbone: training from random initialisation")
+    if getattr(config, "head_prior_init", False) and class_share is not None:
+        init_head_prior(model, class_share)
     return model

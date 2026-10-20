@@ -35,13 +35,20 @@ class Config:
     # ── Model (DeepLabV3 + MobileNetV3-Large) ───────────────────────────
     pretrained_backbone: str = "pretrained/mobilenet_v3_large-8738ca79.pth"
     require_pretrained: bool = True
+    # Initialise the last classifier bias to log(class pixel share of the
+    # server reference set), so round 0 does not spend most of its loss drop
+    # on the trivial "predict background" step that every client learns alike.
+    head_prior_init: bool = True
 
     # ── Federated learning ──────────────────────────────────────────────
     num_rounds: int = 25
     participation_ratio: float = 1.0      # all 20 clients every round
     local_epochs: int = 2
     local_steps: int | None = None
-    local_lr: float = 0.01
+    # Lowered from 0.01 after ECL-FL converged within round 0 (round-0 Shapley
+    # then dominates the participation means).  Pick the final value with
+    # ``bash start.sh lr-probe`` before the pilot.
+    local_lr: float = 0.005
     momentum: float = 0.9
     weight_decay: float = 1e-4
     max_grad_norm: float = 1.0

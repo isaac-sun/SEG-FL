@@ -188,3 +188,17 @@ def test_full_participation_and_resume(setup, tmp_path, monkeypatch):
         a = pd.DataFrame(reference["records"][key]).filter(regex="^(?!.*seconds)")
         b = pd.DataFrame(resumed["records"][key]).filter(regex="^(?!.*seconds)")
         pd.testing.assert_frame_equal(a, b)
+
+
+def test_head_prior_init(setup):
+    config, _, evaluator, _ = setup
+    share = evaluator.pixel_counts.sum(0)
+    model = create_model(config, class_share=share)
+    bias = model.net.classifier[-1].bias.detach()
+    expected = torch.as_tensor(share, dtype=torch.float32).clamp_min(1e-4)
+    expected = (expected / expected.sum()).log()
+    assert torch.allclose(bias, expected)
+    # untrained loss is then close to the entropy of the class shares, far below ln(21)
+    result = evaluator.evaluate(model, model.get_fl_state())
+    loss = float((result["class_ce"] * share).sum() / share.sum())
+    assert loss < np.log(21) - 0.5

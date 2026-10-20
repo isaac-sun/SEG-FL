@@ -2,6 +2,7 @@
 # One-command launcher for the SEG-FL experiments.
 #
 #   bash start.sh prepare      # download / build VOC 2012 aug arrays and check weights
+#   bash start.sh lr-probe     # no-attack runs at LR_LIST to pick LOCAL_LR before the pilot
 #   bash start.sh pilot        # pilot: seed 42, IID + alpha=0.5, no attack + 30% attacks (default)
 #   bash start.sh full         # 4 partitions x 10 conditions x 5 seeds = 200 runs
 #   bash start.sh full-parallel  # the same 200 runs, one process per partition at once
@@ -16,7 +17,8 @@
 # Environment overrides: FORCE_DEVICE (default cuda), SEEDS, TASKS,
 # RESULTS_ROOT, PYTHON_BIN, PIP_INDEX_URL.  FOREGROUND=1 runs in the terminal.
 # full-parallel: THREADS_PER_RUN (default: CPU cores / number of partitions).
-# LOCAL_EPOCHS (default 2) is passed to pilot and full.
+# LOCAL_EPOCHS (default 2) and LOCAL_LR (default 0.005) are passed to pilot and full;
+# lr-probe uses LR_LIST (default "0.01 0.005 0.0025 0.001").
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
@@ -58,12 +60,13 @@ case "$MODE" in
         rm -f "$PID_FILE"
         exit 0 ;;
     prepare)  STEPS=(fetch_data.sh) ;;
+    lr-probe) STEPS=(run_lr_probe.sh) ;;
     pilot)    STEPS=(run_pilot.sh) ;;
     full)     STEPS=(run_full_experiments.sh) ;;
     full-parallel) STEPS=() ;;
     all)      STEPS=(run_pilot.sh run_full_experiments.sh) ;;
-    -h|--help|help) sed -n 2,17p "$0"; exit 0 ;;
-    *) echo "unknown mode: $MODE (prepare|pilot|full|full-parallel|all|status|stop)" >&2; exit 2 ;;
+    -h|--help|help) sed -n 2,21p "$0"; exit 0 ;;
+    *) echo "unknown mode: $MODE (prepare|lr-probe|pilot|full|full-parallel|all|status|stop)" >&2; exit 2 ;;
 esac
 
 if running; then

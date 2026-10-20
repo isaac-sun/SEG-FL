@@ -215,7 +215,8 @@ def checkpoint_identity(config) -> dict:
     keys = ("experiment_name", "seed", "attack_type", "malicious_ratio", "num_rounds",
             "num_clients", "participation_ratio", "partition_id", "num_mc_samples",
             "local_epochs", "local_steps", "batch_size", "local_lr", "momentum",
-            "crop_size", "reference_per_class", "grouping_seed", "compute_shapley")
+            "crop_size", "reference_per_class", "grouping_seed", "compute_shapley",
+            "head_prior_init")
     return {key: getattr(config, key) for key in keys}
 
 
@@ -265,7 +266,7 @@ def run_experiment(config, data, evaluator, test_set, partition, malicious_ids,
                    schedule, checkpoint_path=None):
     """Run one condition+seed; resumable after every finished round."""
     set_seed(config.seed)
-    model = create_model(config)
+    model = create_model(config, class_share=evaluator.pixel_counts.sum(0))
     param_keys = model.param_keys()
     train_model = copy.deepcopy(model)
     eval_model = copy.deepcopy(model)
@@ -295,11 +296,19 @@ def run_experiment(config, data, evaluator, test_set, partition, malicious_ids,
         "pos_sum_history": {cid: [] for cid in range(config.num_clients)},
         "records": {key: [] for key in RECORD_KEYS},
     }
+    # The untrained global model, for the round-0 share of the loss drop.
+    initial_ref = evaluator.evaluate(eval_model, server.get_global_state())
+    initial_ref = segmentation_metrics(initial_ref["confusion"], initial_ref["class_ce"])
+    initial_test = server.evaluate()
+    state["initial"] = {"ref_loss": initial_ref["loss"], "ref_miou": initial_ref["miou"],
+                        "test_loss": initial_test["loss"], "test_miou": initial_test["miou"]}
     start_round = 0
     resumed = load_checkpoint(checkpoint_path, config) if checkpoint_path else None
     if resumed is not None:
         start_round = resumed["next_round"]
+        initial = state["initial"]
         state = resumed["state"]
+        state.setdefault("initial", initial)
         server.global_state = resumed["global_state"]
         server.global_history.clear()
         server.global_history.extend(resumed["global_history"])
@@ -503,6 +512,28 @@ def run_experiment(config, data, evaluator, test_set, partition, malicious_ids,
 
 # ── per-run outputs (written as soon as a condition+seed finishes) ─────────
 
+def learning_speed(initial: dict, curves: pd.DataFrame) -> dict:
+    """How much of the 25-round reference-loss drop happens in round 0.
+
+    V is a variance of per-class marginal loss drops, so it scales roughly
+    with the square of a round's loss drop: ``round0_v_scale`` estimates how
+    many times larger round-0 V is than a typical later round.
+    """
+    losses = np.concatenate([[initial["ref_loss"]], curves["ref_loss"].to_numpy(float)])
+    drops = -np.diff(losses)
+    total = losses[0] - losses[-1]
+    later = np.median(np.abs(drops[1:])) if len(drops) > 1 else float("nan")
+    return {
+        "untrained_test_miou": initial["test_miou"],
+        "untrained_ref_loss": initial["ref_loss"],
+        "round0_ref_loss_drop": float(drops[0]),
+        "round0_share_of_loss_drop": float(drops[0] / total) if total > 0 else float("nan"),
+        "round0_v_scale": float((drops[0] / later) ** 2) if later and later > 0 else float("nan"),
+        "rounds_to_90pct_of_final_miou": int(np.argmax(
+            curves["test_miou"].to_numpy(float) >= 0.9 * curves["test_miou"].iloc[-1])),
+    }
+
+
 def experiment_summary(config, state, malicious_ids, totals, axis_aucs,
                        wall_seconds) -> dict:
     details = pd.DataFrame(state["records"]["round_details"])
@@ -537,6 +568,7 @@ def experiment_summary(config, state, malicious_ids, totals, axis_aucs,
         "best_test_miou": float(curves["test_miou"].max()),
         "final_test_pixel_acc": float(curves["test_pixel_acc"].iloc[-1]),
         "final_test_loss": float(curves["test_loss"].iloc[-1]),
+        **learning_speed(state["initial"], curves),
         "avg_round_shapley_honest": mean(seen_h, "sv_mean"),
         "avg_round_shapley_malicious": mean(seen_m, "sv_mean"),
         "avg_cumulative_shapley_honest": mean(honest, "sv_sum"),
@@ -648,6 +680,8 @@ def parse_args(argv=None):
     p.add_argument("--reference-per-class", type=int, default=Config.reference_per_class)
     p.add_argument("--min-samples-per-client", type=int, default=Config.min_samples_per_client)
     p.add_argument("--pretrained-backbone", default=Config.pretrained_backbone)
+    p.add_argument("--no-head-prior", action="store_true",
+                   help="leave the classifier bias at its default initialisation")
     p.add_argument("--no-pretrained", action="store_true",
                    help="random backbone initialisation (tests only)")
     p.add_argument("--device", choices=("auto", "cuda", "cpu", "mps"), default="auto")
@@ -703,6 +737,7 @@ def main(argv=None):
         reference_per_class=args.reference_per_class,
         pretrained_backbone=args.pretrained_backbone,
         require_pretrained=not args.no_pretrained,
+        head_prior_init=not args.no_head_prior,
         compute_shapley=not args.no_shapley,
         device=device,
     )

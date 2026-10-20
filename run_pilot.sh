@@ -9,7 +9,7 @@ cd "$PROJECT_DIR"
 RESULTS_ROOT="${RESULTS_ROOT:-results/pilot}"
 DEVICE="${FORCE_DEVICE:-auto}"
 COMMON=(--device "$DEVICE" --num-rounds 25 --num-clients 20 --participation-ratio 1.0
-        --local-epochs "${LOCAL_EPOCHS:-2}"
+        --local-epochs "${LOCAL_EPOCHS:-2}" --local-lr "${LOCAL_LR:-0.005}"
         --attack-types dfr,sdfr,afr --malicious-ratios 0.3
         --experiment-seeds 42 --num-mc-samples 20 --summary-root "$RESULTS_ROOT")
 bash run.sh "$@" "${COMMON[@]}" --partition-method iid --results-dir "$RESULTS_ROOT/iid"

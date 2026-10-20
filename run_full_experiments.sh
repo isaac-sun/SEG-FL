@@ -27,7 +27,7 @@ for TASK in $TASKS; do
         --results-dir "$RESULTS_ROOT/$ID" \
         --device "$DEVICE" \
         --num-rounds 25 --num-clients 20 --participation-ratio 1.0 \
-        --local-epochs "${LOCAL_EPOCHS:-2}" \
+        --local-epochs "${LOCAL_EPOCHS:-2}" --local-lr "${LOCAL_LR:-0.005}" \
         --attack-types dfr,sdfr,afr --malicious-ratios 0.1,0.3,0.5 \
         --experiment-seeds "$SEEDS" --num-mc-samples 20 \
         --summary-root "$([ "${PER_PARTITION_SUMMARY:-0}" = 1 ] && echo "$RESULTS_ROOT/$ID" || echo "$RESULTS_ROOT")"

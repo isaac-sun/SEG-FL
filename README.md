@@ -11,8 +11,8 @@ This repository tests whether CSDD transfers to image segmentation. The protocol
 |---|---|
 | 数据 Data | PASCAL VOC 2012 aug：train_aug 10,582 张（客户端 + 服务器参考集），官方 val 1,449 张作测试集 / train_aug 10,582 images (clients + server reference set), official val 1,449 images as the test set |
 | 预处理 Preprocessing | 短边缩放到 288 后中心裁剪成 288×288；训练随机裁剪 256 + 水平翻转，评估取中心 256 / shorter side resized to 288, center crop 288×288; training uses random 256 crops + flips, evaluation the center 256 crop |
-| 模型 Model | DeepLabV3 + MobileNetV3-Large（torchvision），主干用 ImageNet 预训练，21 类 / ImageNet-pretrained backbone, 21 classes |
-| 本地训练 Local training | SGD lr 0.01，momentum 0.9，weight decay 1e-4，2 个 epoch，batch 16，梯度裁剪 1.0，CUDA 上 bf16 / 2 local epochs, batch 16, grad clip 1.0, bf16 on CUDA |
+| 模型 Model | DeepLabV3 + MobileNetV3-Large（torchvision），主干用 ImageNet 预训练，21 类；最后一层偏置初始化为参考集各类像素占比的对数 / ImageNet-pretrained backbone, 21 classes; last-layer bias initialised to log class pixel share of the reference set |
+| 本地训练 Local training | SGD lr 0.005（暂定，试点前用学习率探测确定），momentum 0.9，weight decay 1e-4，2 个 epoch，batch 16，梯度裁剪 1.0，CUDA 上 bf16 / lr 0.005 (provisional, fixed by the learning-rate probe before the pilot), 2 local epochs, batch 16, grad clip 1.0, bf16 on CUDA |
 | 联邦 FL | 20 个客户端，每轮全部参与（100%），25 轮，按样本数加权 FedAvg；BN 统计量一起平均 / 20 clients, all of them every round (100%), 25 rounds, sample-weighted FedAvg; BN statistics are averaged too |
 | 划分 Partitions | IID；Dirichlet α = 0.1 / 0.5 / 1.0，按每张图的主前景类，每个客户端至少 100 张 / IID; Dirichlet on each image's dominant foreground class, at least 100 images per client |
 | 攻击 Attacks | DFR / SDFR / AFR，10% / 30% / 50%，前 2 轮 DFR 预热；只作用于可训练参数，BN 统计量保持全局值 / 2-round DFR warm-up; attacks act on trainable parameters only, BN statistics stay global |
@@ -34,6 +34,19 @@ One coalition inference gives the cross-entropy sum of every (reference image, c
 | `random_class5` | 5 | 把类别随机合并成与 voc_super5 同样大小的 5 组（对照）/ classes merged at random with the voc_super5 sizes (control) |
 | `random_image21` | 21 | 参考图随机分成 21 组，每张图的像素整体归入一组（对照：组数相同，没有类别语义）/ reference images split at random into 21 groups (control: same count, no class semantics) |
 
+### 学习率与第 0 轮 / Learning rate and round 0
+
+ECL 试点里模型在第 0 轮就基本收敛，第 0 轮的 V 比后面大几千倍，按参与次数平均的分数几乎只反映第 0 轮。V 是各类边际损失下降的方差，大致与该轮损失下降的平方成正比，所以分割实验在试点前做两件事：
+In the ECL pilot the model had nearly converged in round 0, so round-0 V was thousands of times larger than later rounds and the participation-mean scores mostly reflected round 0. V scales roughly with the square of a round's loss drop, so before the pilot the segmentation runs:
+
+1. 最后一层偏置按参考集类别占比初始化，初始损失从 ln 21 ≈ 3.0 降到类别分布的熵，第 0 轮不再花大部分下降去学“全预测背景”（`--no-head-prior` 关闭）。
+   initialise the last-layer bias to the reference class shares, so round 0 no longer spends most of its drop learning "predict background" (`--no-head-prior` turns it off);
+2. 默认学习率从 0.01 降到 0.005，并用 `bash start.sh lr-probe` 在 0.01 / 0.005 / 0.0025 / 0.001 上各跑一次无攻击的 25 轮。`lr_probe_report.py` 报告第 0 轮占总损失下降的比例 `round0_share_of_loss_drop` 和 `round0_v_scale`（第 0 轮 V 大约是后面的多少倍），并在第 0 轮占比不超过 0.5 的学习率里建议最终 mIoU 最高的一个，填进 `LOCAL_LR`。
+   lower the default learning rate from 0.01 to 0.005 and run `bash start.sh lr-probe`, one no-attack 25-round run per rate; `lr_probe_report.py` reports the round-0 share of the loss drop and `round0_v_scale`, and suggests the best-mIoU rate whose round-0 share is at most 0.5, to be set as `LOCAL_LR`.
+
+每个正式小实验的 `summary.json` 也记录这几个量（另有 `untrained_test_miou`、`rounds_to_90pct_of_final_miou`）。
+Every run's `summary.json` records the same quantities (plus `untrained_test_miou` and `rounds_to_90pct_of_final_miou`).
+
 假设 / Hypotheses: H1 class21 的 V AUC 明显高于 0.5；H2 class21 优于 random_image21（配对 Wilcoxon，见 `Axis Tests`）；H3 稳健性分数与原始 V 一致。
 H1: class21 V AUC well above 0.5; H2: class21 beats random_image21 (paired Wilcoxon, see `Axis Tests`); H3: the robustness scores agree with raw V.
 
@@ -43,9 +56,11 @@ H1: class21 V AUC well above 0.5; H2: class21 beats random_image21 (paired Wilco
    Upload `SEG-FL.zip` to `/root/autodl-tmp`, open `run_seg.ipynb` in JupyterLab and run cell 0 to extract it.
 2. 第 2 格准备数据（只需一次）：自动下载 VOC 2012、SegmentationClassAug 和主干权重，生成 `dataset/voc_seg/`。下载失败时，把 `VOCtrainval_11-May-2012.tar`、`SegmentationClassAug.zip` 放进 `dataset/raw/`，把 `mobilenet_v3_large-8738ca79.pth`（https://download.pytorch.org/models/mobilenet_v3_large-8738ca79.pth）放进 `pretrained/`，再运行第 2 格。
    Cell 2 prepares the data once: it downloads VOC 2012, SegmentationClassAug and the backbone weights and builds `dataset/voc_seg/`. If a download fails, put `VOCtrainval_11-May-2012.tar` and `SegmentationClassAug.zip` into `dataset/raw/` and the weights file into `pretrained/`, then run cell 2 again.
-3. 第 3 格启动试点（8 个小实验），第 4 格看进度，第 5 格看结果（包括“无攻击时 mIoU 随轮次”，用来判断 2 个 epoch 是否收敛太快；太快就改成 `LOCAL_EPOCHS=1`）。
-   Cell 3 starts the pilot (8 runs), cell 4 shows progress and cell 5 the results, including the no-attack mIoU per round to judge whether 2 epochs converge too fast (if so, use `LOCAL_EPOCHS=1`).
-4. 第 6 格启动正式实验（200 个小实验，4 个划分并行），第 7、8 格看结果，第 9 格打包下载。
+3. 第 2b 格做学习率探测（4 个无攻击小实验），下一格看建议的 `LOCAL_LR`。
+   Cell 2b runs the learning-rate probe (4 no-attack runs); the next cell shows the suggested `LOCAL_LR`.
+4. 第 3 格启动试点（8 个小实验），第 4 格看进度，第 5 格看结果（包括“无攻击时 mIoU 随轮次”；第 0 轮仍然收敛太快就改成 `LOCAL_EPOCHS=1`）。
+   Cell 3 starts the pilot (8 runs), cell 4 shows progress and cell 5 the results, including the no-attack mIoU per round (if round 0 still converges too fast, use `LOCAL_EPOCHS=1`).
+5. 第 6 格启动正式实验（200 个小实验，4 个划分并行），第 7、8 格看结果，第 9 格打包下载。
    Cell 6 starts the formal matrix (200 runs, 4 partitions in parallel); cells 7 and 8 show results; cell 9 zips them for download.
 
 所有任务都在后台运行，关网页不会中断。停止后重新运行同一格会续跑：已完成的小实验跳过，中断的小实验从最后完成的一轮继续（结果逐位一致）。
@@ -55,13 +70,14 @@ Everything runs in the background and survives closing the browser. Rerunning th
 
 ```bash
 bash start.sh prepare        # 数据与权重 / data and weights
+bash start.sh lr-probe       # 学习率探测 / learning-rate probe
 bash start.sh pilot          # 试点 / pilot
 bash start.sh full-parallel  # 正式 200 个 / formal 200 runs
 bash start.sh status         # 进度 / progress
 bash start.sh stop           # 停止（再次启动即续跑）/ stop (start again to resume)
 ```
 
-环境变量 / Environment: `FORCE_DEVICE`（默认 cuda）, `LOCAL_EPOCHS`（默认 2）, `SEEDS`, `TASKS`, `RESULTS_ROOT`, `THREADS_PER_RUN`, `PIP_INDEX_URL`, `FOREGROUND=1`。
+环境变量 / Environment: `FORCE_DEVICE`（默认 cuda）, `LOCAL_EPOCHS`（默认 2）, `LOCAL_LR`（默认 0.005）, `LR_LIST`, `SEEDS`, `TASKS`, `RESULTS_ROOT`, `THREADS_PER_RUN`, `PIP_INDEX_URL`, `FOREGROUND=1`。
 
 ## 输出 / Outputs
 
