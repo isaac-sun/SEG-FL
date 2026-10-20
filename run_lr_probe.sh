@@ -3,7 +3,8 @@
 # 25 rounds, full participation, one run per learning rate (LR_LIST).
 # lr_probe_report.py then shows per learning rate how much of the loss drop
 # happens in round 0 and the final test mIoU, and suggests a value for
-# LOCAL_LR (pilot and full).
+# LOCAL_LR (pilot and full).  The report is also saved to
+# <RESULTS_ROOT>/lr_probe_report.txt (read it with cat; no Python packages needed).
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
@@ -18,4 +19,4 @@ for LR in $LR_LIST; do
         --results-dir "$RESULTS_ROOT/lr$LR" --summary-root "$RESULTS_ROOT/lr$LR"
 done
 PYTHONPATH="$PROJECT_DIR/pip_pkgs${PYTHONPATH:+:$PYTHONPATH}" "${PYTHON_BIN:-python3}" \
-    lr_probe_report.py "$RESULTS_ROOT"
+    lr_probe_report.py "$RESULTS_ROOT" | tee "$RESULTS_ROOT/lr_probe_report.txt"
