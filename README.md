@@ -47,6 +47,11 @@ In the ECL pilot the model had nearly converged in round 0, so round-0 V was tho
 每个正式小实验的 `summary.json` 也记录这几个量（另有 `untrained_test_miou`、`rounds_to_90pct_of_final_miou`）。
 Every run's `summary.json` records the same quantities (plus `untrained_test_miou` and `rounds_to_90pct_of_final_miou`).
 
+### 不分类别的全局 Shapley 对照 / Classless global Shapley control
+
+`global` 轴：每个联盟模型在整个 VOC val（1,449 张，全部标注像素）上的像素平均交叉熵下降，当作一个整体算 Shapley 值，不分类别，只有 SV，没有 V 和 P。它与 ECL-FL 的 `global` 轴口径一致。`Axis Tests` 里用配对 Wilcoxon 比较 class21 的 V_mean 与 global 的 SV_mean，以及 class21 自己在参考集上的 SV_mean。每个联盟多评估一遍 val，Shapley 部分会变慢；`--no-global-axis` 可以关掉。
+Axis `global`: the Shapley value of the pixel-mean CE drop over the whole VOC val set (1,449 images, all labelled pixels), no class split, so only SV is defined (no V or P); same definition as ECL-FL's `global` axis. `Axis Tests` compares class21 V_mean with global SV_mean and with class21's own reference-set SV_mean (paired Wilcoxon). It adds one val pass per coalition; `--no-global-axis` turns it off.
+
 假设 / Hypotheses: H1 class21 的 V AUC 明显高于 0.5；H2 class21 优于 random_image21（配对 Wilcoxon，见 `Axis Tests`）；H3 稳健性分数与原始 V 一致。
 H1: class21 V AUC well above 0.5; H2: class21 beats random_image21 (paired Wilcoxon, see `Axis Tests`); H3: the robustness scores agree with raw V.
 

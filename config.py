@@ -59,6 +59,9 @@ class Config:
     compute_shapley: bool = True
     num_mc_samples: int = 20
     main_grouping: str = "class21"
+    # Classless control: Shapley of the pixel-mean CE over the whole VOC val
+    # set (1,449 images), axis "global"; costs one extra val pass per coalition.
+    global_axis: bool = True
     # Equal-weight coalitions, as in the paper (Eq. 14).
     shapley_equal_weights: bool = True
     shapley_cache_coalitions: bool = True

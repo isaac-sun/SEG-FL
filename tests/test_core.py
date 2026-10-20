@@ -202,3 +202,32 @@ def test_head_prior_init(setup):
     result = evaluator.evaluate(model, model.get_fl_state())
     loss = float((result["class_ce"] * share).sum() / share.sum())
     assert loss < np.log(21) - 0.5
+
+
+def test_global_axis_is_whole_set_shapley(setup):
+    config, _, evaluator, test_set = setup
+    whole = ReferenceEvaluator(evaluator.image_set, dict(evaluator.groupings), 21, "cpu",
+                               amp=False, whole_sets={"global": test_set})
+    assert whole.names[-1] == "global" and whole.split(np.zeros(whole.total_groups))["global"].size == 1
+    model = create_model(config)
+    gs = model.get_fl_state()
+    gen = torch.Generator().manual_seed(1)
+    updates = {cid: type(gs)((k, 1e-2 * torch.randn(v.shape, generator=gen)
+                              if v.is_floating_point() else torch.zeros_like(v))
+                             for k, v in gs.items()) for cid in range(3)}
+    sv, evals = estimate_round_shapley(model, updates, gs, whole, num_mc_samples=2,
+                                       rng=np.random.default_rng(0))
+    # efficiency on the whole val set: sum of SV = val loss drop of the grand coalition
+    from contribution.shapley import evaluate_image_set, segmentation_metrics
+    def val_loss(state):
+        model.load_fl_state(state)
+        model.eval()
+        r = evaluate_image_set(model, test_set, 21, "cpu", False)
+        return segmentation_metrics(r["confusion"], r["class_ce"])["loss"]
+    grand = type(gs)((k, v + sum(updates[c][k] for c in range(3)) / 3) for k, v in gs.items())
+    expected = val_loss(gs) - val_loss(grand)
+    assert np.isclose(sum(float(sv["global"][c][0]) for c in range(3)), expected, atol=1e-6)
+    # the reference-set groupings are unchanged by the extra axis
+    for name in evaluator.names:
+        assert np.allclose(evals[()]["group_loss"][whole.slices[name]],
+                           evaluator.evaluate(model, gs)["group_loss"][evaluator.slices[name]])

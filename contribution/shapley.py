@@ -30,10 +30,10 @@ class ReferenceEvaluator:
     """Reference set + groupings; turns a model state into group losses."""
 
     def __init__(self, image_set, groupings: dict, num_classes: int, device: str,
-                 amp: bool = True):
+                 amp: bool = True, whole_sets: dict | None = None):
         self.image_set = image_set
         self.groupings = groupings
-        self.names = list(groupings)
+        self.names = [n for n in groupings if n not in (whole_sets or {})]
         self.num_classes = num_classes
         self.device = device
         self.amp = amp
@@ -50,9 +50,21 @@ class ReferenceEvaluator:
             ids.append(torch.where(cell >= 0, cell + offset, torch.full_like(cell, -1)))
             self.slices[name] = slice(offset, offset + g.num_groups)
             offset += g.num_groups
-        self.total_groups = offset
         self.cell_ids = torch.stack(ids)                         # [G, cells]
-        self.group_pixels = self._group_sum(flat_counts)          # [total_groups]
+        self.num_cell_groups = offset
+        self.total_groups = offset
+        # Whole-set axes: one group = every labelled pixel of another image set
+        # (e.g. ``global`` = the whole VOC val set), no class split.
+        self.whole_sets = dict(whole_sets or {})
+        whole_pixels = []
+        for name, other in self.whole_sets.items():
+            self.names.append(name)
+            self.slices[name] = slice(self.total_groups, self.total_groups + 1)
+            self.total_groups += 1
+            whole_pixels.append(float(other.pixel_counts().sum()))
+        self.group_pixels = torch.cat([
+            self._group_sum(flat_counts),
+            torch.tensor(whole_pixels, dtype=torch.float64, device=device)])
         if (self.group_pixels <= 0).any():
             empty = [(n, int(i) - self.slices[n].start) for n in self.names
                      for i in range(self.slices[n].start, self.slices[n].stop)
@@ -60,7 +72,7 @@ class ReferenceEvaluator:
             raise ValueError(f"empty groups in the reference set: {empty}")
 
     def _group_sum(self, flat_values: torch.Tensor) -> torch.Tensor:
-        out = torch.zeros(self.total_groups, dtype=torch.float64, device=self.device)
+        out = torch.zeros(self.num_cell_groups, dtype=torch.float64, device=self.device)
         for ids in self.cell_ids:
             keep = ids >= 0
             out.index_add_(0, ids[keep], flat_values[keep].double())
@@ -77,8 +89,17 @@ class ReferenceEvaluator:
         model.load_fl_state(state)
         model.to(self.device)
         model.eval()
-        return evaluate_image_set(model, self.image_set, self.num_classes, self.device,
-                                  self.amp, evaluator=self)
+        result = evaluate_image_set(model, self.image_set, self.num_classes, self.device,
+                                    self.amp, evaluator=self)
+        if self.whole_sets:
+            losses = []
+            for other in self.whole_sets.values():
+                part = evaluate_image_set(model, other, self.num_classes, self.device,
+                                          self.amp)
+                metrics = segmentation_metrics(part["confusion"], part["class_ce"])
+                losses.append(metrics["loss"])
+            result["group_loss"] = np.concatenate([result["group_loss"], losses])
+        return result
 
     def split(self, vector: np.ndarray) -> dict:
         return {name: vector[self.slices[name]] for name in self.names}
@@ -118,7 +139,7 @@ def evaluate_image_set(model, image_set, num_classes: int, device: str, amp: boo
     }
     if evaluator is not None:
         result["group_loss"] = (evaluator._group_sum(ce_cells)
-                                / evaluator.group_pixels).cpu().numpy()
+                                / evaluator.group_pixels[:evaluator.num_cell_groups]).cpu().numpy()
     return result
 
 

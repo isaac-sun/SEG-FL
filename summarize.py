@@ -12,8 +12,10 @@ Reads every ``runs/*/summary.json`` below ``--results-root`` and writes
   aggregations) on every grouping ("Shapley axis": class21, class20_nobg,
   voc_super5, random_class5, random_image21) of the same runs; same layout as
   ECL-FL;
-* ``Axis Tests``: H2, paired Wilcoxon signed-rank test of class21 against
-  every control axis over all attack runs (pooled and per partition);
+* ``Axis Tests``: paired Wilcoxon signed-rank tests over all attack runs
+  (pooled and per partition): H2, class21 against every control axis; and
+  class21 V_mean against the classless Shapley value (SV_mean) on ``global``
+  (whole val set) and on the reference set;
 * ``AUC by Run``: one row per condition+seed;
 * ``Seed Macro``: per-seed macro AUC over all attack conditions;
 * ``Client Totals``: per-client cumulative and per-participation scores;
@@ -87,7 +89,10 @@ ROBUST_SCORES = {
     "V_late_mean": f"participation mean of V over rounds >= {LATE_FROM_ROUND}",
 }
 AXIS_SCORES = ("V_mean", "P_mean", "SV_mean", "V_rank_mean", "log10V_mean", "V_late_mean")
+WHOLE_SET_AXES = ("global",)   # one group: only SV is defined
 AXIS_DEFINITIONS = {
+    "global": "whole VOC val set (1,449 images, all labelled pixels), no class split: "
+              "classless Shapley control; V and P undefined",
     "class21": "one group per VOC pixel class, background included; primary arm",
     "class20_nobg": "as class21 without the background pixels",
     "voc_super5": "official VOC categories: background, person, animal, vehicle, indoor",
@@ -141,6 +146,9 @@ def axis_scores(axis_records: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
             record = {k: run[k] for k in CONDITION_KEYS + ["run_seed", "experiment_name"]}
             record["axis"] = axis
             for name, series in scores.items():
+                if axis in WHOLE_SET_AXES and name != "SV_mean":
+                    record[f"auc_{name}"] = np.nan
+                    continue
                 values = series.reindex(clients).fillna(fill[name]).to_numpy()
                 record[f"auc_{name}"] = pairwise_auc(values[~is_mal], values[is_mal], True)
             rows.append(record)
@@ -167,37 +175,46 @@ def axis_tables(axis_runs: pd.DataFrame):
     return by_condition, comparison
 
 
-def axis_tests(axis_runs: pd.DataFrame, scores=("V_mean", "P_mean")) -> pd.DataFrame:
-    """H2: paired Wilcoxon signed-rank test, class21 vs each control axis,
-    over all attack runs (pooled and per partition)."""
+def axis_tests(axis_runs: pd.DataFrame) -> pd.DataFrame:
+    """Paired Wilcoxon signed-rank tests over all attack runs (pooled and per
+    partition).  H2: class21 V_mean / P_mean vs the same score on each control
+    axis.  Classless control: class21 V_mean vs SV_mean on ``global`` (whole
+    val set) and on class21 itself (reference set)."""
     from scipy.stats import wilcoxon
 
     if not len(axis_runs) or MAIN_GROUPING not in set(axis_runs["axis"]):
         return pd.DataFrame()
+    axes = list(dict.fromkeys(axis_runs["axis"]))
+    pairs = [(score, other, score) for score in ("V_mean", "P_mean")
+             for other in axes if other != MAIN_GROUPING and other not in WHOLE_SET_AXES]
+    pairs += [("V_mean", other, "SV_mean") for other in axes if other in WHOLE_SET_AXES]
+    pairs += [("V_mean", MAIN_GROUPING, "SV_mean")]
+    long = axis_runs.melt(id_vars=CONDITION_KEYS + ["run_seed", "axis"],
+                          value_vars=[f"auc_{s}" for s in AXIS_SCORES],
+                          var_name="score", value_name="auc")
+    long["key"] = long["axis"] + ":" + long["score"].str[len("auc_"):]
+    wide = long.pivot_table(index=CONDITION_KEYS + ["run_seed"], columns="key",
+                            values="auc").reset_index()
     rows = []
-    controls = [a for a in dict.fromkeys(axis_runs["axis"]) if a != MAIN_GROUPING]
-    for score in scores:
-        wide = axis_runs.pivot_table(index=CONDITION_KEYS + ["run_seed"], columns="axis",
-                                     values=f"auc_{score}").reset_index()
-        for scope, part in [("all", wide)] + list(wide.groupby("partition_id")):
-            for other in controls:
-                if other not in part:
-                    continue
-                pair = part[[MAIN_GROUPING, other]].dropna()
-                diff = pair[MAIN_GROUPING] - pair[other]
-                record = {"scope": scope, "score": score, "main": MAIN_GROUPING,
-                          "control": other, "num_runs": int(len(pair)),
-                          "main_mean_auc": float(pair[MAIN_GROUPING].mean()) if len(pair) else np.nan,
-                          "control_mean_auc": float(pair[other].mean()) if len(pair) else np.nan,
-                          "mean_difference": float(diff.mean()) if len(pair) else np.nan,
-                          "main_better_runs": int((diff > 0).sum()),
-                          "control_better_runs": int((diff < 0).sum()),
-                          "wilcoxon_statistic": np.nan, "p_value": np.nan}
-                if len(pair) >= 2 and (diff != 0).any():
-                    result = wilcoxon(pair[MAIN_GROUPING], pair[other], zero_method="wilcox")
-                    record["wilcoxon_statistic"] = float(result.statistic)
-                    record["p_value"] = float(result.pvalue)
-                rows.append(record)
+    for scope, part in [("all", wide)] + list(wide.groupby("partition_id")):
+        for main_score, other, other_score in pairs:
+            a, b = f"{MAIN_GROUPING}:{main_score}", f"{other}:{other_score}"
+            if a not in part or b not in part:
+                continue
+            pair = part[[a, b]].dropna()
+            diff = pair[a] - pair[b]
+            record = {"scope": scope, "main": a, "control": b, "num_runs": int(len(pair)),
+                      "main_mean_auc": float(pair[a].mean()) if len(pair) else np.nan,
+                      "control_mean_auc": float(pair[b].mean()) if len(pair) else np.nan,
+                      "mean_difference": float(diff.mean()) if len(pair) else np.nan,
+                      "main_better_runs": int((diff > 0).sum()),
+                      "control_better_runs": int((diff < 0).sum()),
+                      "wilcoxon_statistic": np.nan, "p_value": np.nan}
+            if len(pair) >= 2 and (diff != 0).any():
+                result = wilcoxon(pair[a], pair[b], zero_method="wilcox")
+                record["wilcoxon_statistic"] = float(result.statistic)
+                record["p_value"] = float(result.pvalue)
+            rows.append(record)
     return pd.DataFrame(rows)
 
 

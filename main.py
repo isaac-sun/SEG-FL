@@ -51,7 +51,8 @@ from contribution.shapley import (
     per_group_to_overall,
     segmentation_metrics,
 )
-from data.voc import VOC_CLASSES, ImageSet, build_groupings, center_crop, load_voc
+from data.voc import (VOC_CLASSES, WHOLE_SET_AXES, ImageSet, build_groupings, center_crop,
+                      load_voc, whole_set_grouping)
 from fl.aggregation import fedavg_aggregate
 from fl.client import FLClient
 from fl.server import FLServer
@@ -202,7 +203,11 @@ def axis_client_totals(axis_records: list[dict], num_clients: int, malicious_ids
         totals = client_totals(part.to_dict("records"), num_clients, malicious_ids)
         rows.extend(dict(t, axis=name) for t in totals)
         if malicious_ids:
-            aucs.update(auc_record(totals, f"__{name}"))
+            record = auc_record(totals, f"__{name}")
+            if name in WHOLE_SET_AXES:   # one group: V and P are undefined
+                record = {k: (float("nan") if k.startswith(("auc_V_", "auc_P_")) else v)
+                          for k, v in record.items()}
+            aucs.update(record)
     return rows, aucs
 
 
@@ -216,7 +221,7 @@ def checkpoint_identity(config) -> dict:
             "num_clients", "participation_ratio", "partition_id", "num_mc_samples",
             "local_epochs", "local_steps", "batch_size", "local_lr", "momentum",
             "crop_size", "reference_per_class", "grouping_seed", "compute_shapley",
-            "head_prior_init")
+            "head_prior_init", "global_axis")
     return {key: getattr(config, key) for key in keys}
 
 
@@ -667,6 +672,8 @@ def parse_args(argv=None):
     p.add_argument("--experiment-seeds", type=csv_list(int), default=(42, 43, 44, 45, 46))
     p.add_argument("--no-baseline", action="store_true", help="skip the no-attack condition")
     p.add_argument("--no-shapley", action="store_true")
+    p.add_argument("--no-global-axis", action="store_true",
+                   help="skip the classless whole-val-set Shapley axis (faster)")
     p.add_argument("--num-rounds", type=int, default=Config.num_rounds)
     p.add_argument("--num-clients", type=int, default=Config.num_clients)
     p.add_argument("--participation-ratio", type=float, default=Config.participation_ratio)
@@ -739,6 +746,7 @@ def main(argv=None):
         require_pretrained=not args.no_pretrained,
         head_prior_init=not args.no_head_prior,
         compute_shapley=not args.no_shapley,
+        global_axis=not args.no_global_axis and not args.no_shapley,
         device=device,
     )
     os.makedirs(os.path.join(base.results_dir, "runs"), exist_ok=True)
@@ -753,8 +761,12 @@ def main(argv=None):
     test_set = ImageSet(data.test_images, data.test_labels, base.eval_batch_size, device,
                         base.num_classes)
     groupings = build_groupings(len(reference_set), base.num_classes, base.grouping_seed)
+    whole_sets = {"global": test_set} if base.global_axis else {}
+    for name in whole_sets:
+        groupings[name] = whole_set_grouping(
+            name, "whole VOC val set (all labelled pixels), no class split; classless control")
     evaluator = ReferenceEvaluator(reference_set, groupings, base.num_classes, device,
-                                   base.eval_amp)
+                                   base.eval_amp, whole_sets=whole_sets)
     logger.info("train pool %d images, reference %d, test %d; groupings %s",
                 len(data.client_pool), len(reference_set), len(test_set),
                 {n: g.num_groups for n, g in groupings.items()})

@@ -213,7 +213,7 @@ def plot_run(run_dir: str, tables: dict, summary: dict) -> list[str]:
 
     # 8. All groupings: V by round (honest vs free rider) and V-mean AUC.
     if len(axis_records):
-        names = list(dict.fromkeys(axis_records["axis"]))
+        names = [n for n in dict.fromkeys(axis_records["axis"]) if n != "global"]
         fig, axes = plt.subplots(1, len(names) + 1, figsize=(4 * (len(names) + 1), 3.8))
         for ax, name in zip(axes, names):
             part = axis_records[axis_records["axis"] == name]
@@ -306,6 +306,9 @@ def plot_summary(root: str, runs: pd.DataFrame, axis_runs: pd.DataFrame | None =
     # AUC of V mean per grouping ("Shapley axis") and condition (H2).
     if axis_runs is not None and len(axis_runs):
         frame = axis_runs.copy()
+        whole = frame["axis"] == "global"   # classless control: only SV is defined
+        frame.loc[whole, "auc_V_mean"] = frame.loc[whole, "auc_SV_mean"]
+        frame.loc[whole, "axis"] = "global (SV)"
         frame["condition"] = _condition(frame)
         order = _condition_order(frame["condition"])
         names = list(dict.fromkeys(frame["axis"]))

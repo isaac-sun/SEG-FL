@@ -33,6 +33,8 @@ VOC_SUPER = {
     "indoor": (5, 9, 11, 16, 18, 20),
 }
 GROUPINGS = ("class21", "class20_nobg", "voc_super5", "random_class5", "random_image21")
+# Single-group axes: classless Shapley on a whole image set (no V or P).
+WHOLE_SET_AXES = ("global",)
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -186,6 +188,11 @@ class Grouping:
 def _class_grouping(name, class_to_group, group_names, num_images, definition):
     cell = np.tile(np.asarray(class_to_group, dtype=np.int64), (num_images, 1))
     return Grouping(name, len(group_names), cell, list(group_names), definition)
+
+
+def whole_set_grouping(name: str, definition: str) -> Grouping:
+    """Descriptor of a whole-set axis (one group; no reference cells)."""
+    return Grouping(name, 1, np.zeros((0, 0), dtype=np.int64), ["all_pixels"], definition)
 
 
 def build_groupings(num_images: int, num_classes: int = 21, seed: int = 0) -> dict:
