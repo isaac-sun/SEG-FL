@@ -231,3 +231,16 @@ def test_global_axis_is_whole_set_shapley(setup):
     for name in evaluator.names:
         assert np.allclose(evals[()]["group_loss"][whole.slices[name]],
                            evaluator.evaluate(model, gs)["group_loss"][evaluator.slices[name]])
+
+
+def test_no_single_image_batch():
+    from fl.client import FLClient
+
+    class C:
+        batch_size, crop_size, seed = 16, 8, 0
+    images = torch.zeros(33, 10, 10, 3, dtype=torch.uint8)
+    labels = torch.zeros(33, 10, 10, dtype=torch.uint8)
+    client = FLClient(0, range(33), images, labels, C())
+    stream = client._batches()
+    sizes = [len(next(stream)[0]) for _ in range(client.batches_per_epoch())]
+    assert sizes == [16, 17] and client.batches_per_epoch() == 2

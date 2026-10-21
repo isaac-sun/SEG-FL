@@ -32,16 +32,26 @@ class FLClient:
     def num_samples(self) -> int:
         return int(self.indices.numel())
 
+    def _epoch_bounds(self):
+        """Batch boundaries of one epoch.  A 1-image tail is folded into the
+        previous batch, since BatchNorm in the ASPP pooling branch (1x1 maps)
+        cannot train on a single image."""
+        n, size = self.num_samples(), self.config.batch_size
+        starts = list(range(0, n, size))
+        if len(starts) > 1 and n - starts[-1] == 1:
+            starts.pop()
+        return list(zip(starts, starts[1:] + [n]))
+
     def batches_per_epoch(self) -> int:
-        return -(-self.num_samples() // self.config.batch_size)
+        return len(self._epoch_bounds())
 
     def _batches(self):
         """Endless stream of shuffled, augmented batches (one epoch at a time)."""
-        size = self.config.batch_size
+        bounds = self._epoch_bounds()
         while True:
             order = self.indices[torch.randperm(self.num_samples(), generator=self.generator)]
-            for start in range(0, len(order), size):
-                idx = order[start:start + size]
+            for start, stop in bounds:
+                idx = order[start:stop]
                 yield random_crop_flip(self.images[idx], self.labels[idx],
                                        self.config.crop_size, self.generator)
 
