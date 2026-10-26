@@ -53,14 +53,17 @@ CONDITION_KEYS = ["partition_id", "attack_type", "malicious_ratio"]
 RUN_KEYS = ["partition_id", "experiment_name", "run_seed"]
 
 
-def load(root: str):
+def load(root: str, seeds=None):
     summaries = []
     tables = {name: [] for name in RUN_TABLES}
     for path in sorted(glob.glob(os.path.join(root, "**", "runs", "*", "summary.json"),
                                  recursive=True)):
         run_dir = os.path.dirname(path)
         with open(path) as handle:
-            summaries.append(json.load(handle))
+            summary = json.load(handle)
+        if seeds and int(summary.get("run_seed", -1)) not in seeds:
+            continue
+        summaries.append(summary)
         for name in RUN_TABLES:
             file = os.path.join(run_dir, f"{name}.csv")
             if os.path.exists(file) and os.path.getsize(file) > 1:
@@ -230,8 +233,14 @@ def main(argv=None):
     parser.add_argument("--results-root", default="results/full_experiment")
     parser.add_argument("--output", default=None)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--seeds", default="",
+                        help="comma-separated run seeds to include (default: all)")
+    parser.add_argument("--slim", action="store_true",
+                        help="leave out the large per-class sheets (per_class_records, "
+                             "per_class_client_metrics)")
     args = parser.parse_args(argv)
-    runs, tables = load(args.results_root)
+    seeds = {int(x) for x in args.seeds.split(",") if x.strip()}
+    runs, tables = load(args.results_root, seeds)
     totals, curves = tables["client_totals"], tables["round_curves"]
     output = args.output or os.path.join(args.results_root, "seg_csdd_summary.xlsx")
 
@@ -296,6 +305,8 @@ def main(argv=None):
                             ("per_class_client_metrics", "per_class_client_metrics"),
                             ("per_class_global_metrics", "round_curves"),
                             ("axis_shapley_records", "axis_records")):
+            if args.slim and name.startswith("per_class"):
+                continue
             _write(writer, tables[name], sheet, args.results_root, name)
     os.replace(tmp, output)
     if not args.no_plots:
